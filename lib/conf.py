@@ -216,7 +216,7 @@ bug_report_env_opt_out = os.environ.get('DO_NOT_TRACK', '0').strip().lower() in 
 # ---------------------------------------------------------------------
 # Interface configuration
 # ---------------------------------------------------------------------
-interface_host = '0.0.0.0'
+interface_host = os.environ.get('EBOOK2AUDIOBOOK_HOST', '0.0.0.0')
 interface_port = 7860
 interface_shared_tmp_expire = 3 # in days
 interface_concurrency_limit = 1 # or None for unlimited multiple parallele user conversion
