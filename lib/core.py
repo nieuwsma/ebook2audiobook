@@ -3421,7 +3421,10 @@ def combine_audio_chapters(session_id:str)->list[str]|None:
         for x, block in enumerate(session['blocks_current']['blocks']):
             if not (block['keep'] and block['text'].strip()):
                 continue
-            if not block.get('sentences'):
+            speakable = any(any(c.isalnum() for c in s) for s in (block.get('sentences') or []))
+            if not speakable:
+                if not any(c.isalnum() for c in block.get('text', '')):
+                    continue
                 error = legends['error_block_no_sentences'].format(block=x, id=block['id'])
                 print(error)
                 return None
@@ -4524,6 +4527,10 @@ def finalize_audiobook(session_id:str)->tuple:
             if sentences_list is None:
                 error = legends['msg_no_sentences_found']
                 return result(error, False)
+            if not any(any(c.isalnum() for c in s) for s in sentences_list):
+                block['keep'] = False
+                block['sentences'] = []
+                continue
             block['sentences'] = sentences_list
         blocks_current['blocks'] = blocks
         session['blocks_current'] = blocks_current
