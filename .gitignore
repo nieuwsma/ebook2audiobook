@@ -10,6 +10,9 @@ python_env/
 audiobooks/cli/*
 audiobooks/gui/gradio/*
 audiobooks/gui/host/*
+audiobooks/jobs/
+audiobooks/jobs.sqlite
+audiobooks/library/
 run/*
 tmp/*
 models/*

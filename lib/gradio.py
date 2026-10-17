@@ -12,6 +12,8 @@ progress_bar = gr.Progress(track_tqdm=False)
 
 def build_interface(args:dict)->gr.Blocks:
     from lib.classes.tts_engines.common.preset_loader import load_engine_presets
+    from lib.jobs import reconcile
+    reconcile()
     try:
         script_mode = args['script_mode']
         is_gui_process = args['is_gui_process']
@@ -77,7 +79,7 @@ def build_interface(args:dict)->gr.Blocks:
                                         gr_voice_del_btn = gr.Button('🗑', elem_id='gr_voice_del_btn', elem_classes=['small-btn-red'], variant='secondary', interactive=True, visible=False, scale=0, min_width=60)
                                 with gr.Group(elem_id='gr_group_device', elem_classes=['gr-group']):
                                     gr_device_markdown = gr.Markdown(elem_id='gr_device_markdown', elem_classes=['gr-markdown'], value=legends['gr_device_markdown'])
-                                    gr_device = gr.Dropdown(label='', elem_id='gr_device', choices=[(k, v['proc']) for k, v in devices.items()], type='value', value=default_device, interactive=True)
+                                    gr_device = gr.Dropdown(label='', elem_id='gr_device', choices=[(k, v['proc']) for k, v in devices.items()], type='value', value=(devices['MPS']['proc'] if devices['MPS']['found'] else default_device), interactive=True)
                             with gr.Column(elem_id='gr_col_2', elem_classes=['gr-col'], scale=3):
                                 with gr.Group(elem_id='gr_group_tts_engine', elem_classes=['gr-group']):
                                     gr_tts_rating = gr.Markdown(elem_id='gr_tts_rating', elem_classes=['gr-markdown'], value=legends['gr_tts_rating'])
@@ -113,7 +115,11 @@ def build_interface(args:dict)->gr.Blocks:
 
                         with gr.Group(elem_id='gr_group_progress', elem_classes=['gr-group-no-col']):
                             gr_progress_markdown = gr.Markdown(elem_id='gr_progress_markdown', elem_classes=['gr-markdown'], value=legends['gr_progress_markdown'])
-                            gr_progress = gr.Textbox(elem_id='gr_progress', label='', interactive=False, visible=True)
+                            gr_progress = gr.Textbox(elem_id='gr_progress', label='', interactive=False, visible=True, lines=6)
+                            gr_job_list = gr.Dropdown(label='Server jobs', elem_id='gr_job_list', choices=[], type='value', interactive=True)
+                            with gr.Row(elem_id='gr_row_jobs'):
+                                gr_job_resume_btn = gr.Button('Resume', elem_id='gr_job_resume_btn', variant='secondary')
+                                gr_job_cancel_btn = gr.Button('Cancel', elem_id='gr_job_cancel_btn', variant='secondary')
                             gr_progress_bar = gr.Progress(track_tqdm=True)
 
                         with gr.Group(elem_id='gr_group_audiobook_list', elem_classes=['gr-group-no-col'], visible=True) as gr_group_audiobook_list:
@@ -2530,6 +2536,42 @@ def build_interface(args:dict)->gr.Blocks:
                     exception_alert(session_id, error)
                 return
 
+            def _job_settings(args:dict)->dict:
+                keys = [
+                    'language', 'device', 'tts_engine', 'voice', 'fine_tuned', 'custom_model',
+                    'output_format', 'output_channel', 'translate', 'xtts_temperature',
+                    'xtts_length_penalty', 'xtts_num_beams', 'xtts_repetition_penalty',
+                    'xtts_top_k', 'xtts_top_p', 'xtts_speed', 'xtts_enable_text_splitting',
+                    'bark_text_temp', 'bark_waveform_temp', 'interlude_enabled',
+                ]
+                return {key: args.get(key) for key in keys}
+
+            def _ebook_path(src:object)->str|None:
+                if isinstance(src, list):
+                    src = src[0] if src else None
+                if isinstance(src, dict):
+                    src = src.get('path') or src.get('name')
+                if isinstance(src, str) and src.strip():
+                    return src
+                return None
+
+            def _enqueue_job(args:dict)->str:
+                from lib.jobs import enqueue, enqueue_text, status_text
+                settings = _job_settings(args)
+                if args['ebook_mode'] == ebook_modes['TEXT']:
+                    enqueue_text(args['ebook_textarea'], settings)
+                elif args['ebook_mode'] == ebook_modes['DIRECTORY']:
+                    for src in args.get('ebook_list') or []:
+                        path = _ebook_path(src)
+                        if path and os.path.exists(path):
+                            enqueue(path, settings)
+                else:
+                    path = _ebook_path(args.get('ebook_src'))
+                    if not path or not os.path.exists(path):
+                        return 'The uploaded file is not on the server yet.'
+                    enqueue(path, settings)
+                return 'Queued on the server. This keeps running if you leave the page.\n' + status_text()
+
             def _start_conversion(
                     session_id:str, device:str, ebook_mode:str, ebook_src:str|list|None, ebook_textarea:str|None, blocks_preview:bool, interlude_enabled:bool, tts_engine:str, language:str, voice:str, custom_model:str, fine_tuned:str, output_format:str, output_channel:str, xtts_temperature:float, 
                     xtts_length_penalty:int, xtts_num_beams:int, xtts_repetition_penalty:float, xtts_top_k:int, xtts_top_p:float, xtts_speed:float, xtts_enable_text_splitting:bool, bark_text_temp:float, bark_waveform_temp:float,
@@ -2593,6 +2635,8 @@ def build_interface(args:dict)->gr.Blocks:
                                     args['ebook_textarea'] = args['ebook_textarea'].strip()
                                     if len(args['ebook_textarea']) < 10:
                                         error = legends['error_textarea_too_short']                                
+                            if error is None and not args['blocks_preview']:
+                                return gr.update(value=_enqueue_job(args))
                             if error is None:
                                 session['ticker'] = len(audiobook_options)
                                 if args['ebook_mode'] == ebook_modes['DIRECTORY']:
@@ -2684,11 +2728,13 @@ def build_interface(args:dict)->gr.Blocks:
                     nonlocal audiobook_options
                     session = context.get_session(session_id)
                     if session and session.get('id', False):
-                        if session['audiobooks_dir'] is not None:
+                        from lib.jobs import library_choices
+                        audiobook_options = library_choices()
+                        if session['audiobooks_dir'] is not None and not audiobook_options:
                             audiobook_options = [
                                 (f, os.path.join(session['audiobooks_dir'], str(f)))
                                 for f in os.listdir(session['audiobooks_dir'])
-                                if not f.lower().endswith(".vtt")
+                                if not f.lower().endswith(".vtt") and os.path.isfile(os.path.join(session['audiobooks_dir'], str(f)))
                             ]
                         if len(audiobook_options) > 0:
                             audiobook_options.sort(
@@ -3879,6 +3925,48 @@ def build_interface(args:dict)->gr.Blocks:
                 fn=_update_gr_save_session,
                 inputs=[gr_session, gr_session_update],
                 outputs=[gr_save_session, gr_session_update, gr_audiobook_list]
+            )
+
+            def _tick_server_jobs(selected_audio:str|None, selected_job:str|None)->tuple:
+                from lib.jobs import poll, status_text, library_choices, job_choices
+                poll()
+                books = library_choices()
+                paths = [path for _label, path in books]
+                audio = gr.update(choices=books)
+                if selected_audio not in paths:
+                    audio = gr.update(choices=books, value=(paths[0] if paths else None))
+                listed = job_choices()
+                ids = [job_id for _label, job_id in listed]
+                chosen = gr.update(choices=listed)
+                if selected_job not in ids:
+                    chosen = gr.update(choices=listed, value=(ids[0] if ids else None))
+                return status_text(), audio, chosen
+
+            def _click_resume(job_id:str|None)->str:
+                from lib.jobs import resume, status_text
+                note = resume(job_id) if job_id else 'Choose a job.'
+                return note + '\n' + status_text()
+
+            def _click_cancel(job_id:str|None)->str:
+                from lib.jobs import cancel, status_text
+                note = cancel(job_id) if job_id else 'Choose a job.'
+                return note + '\n' + status_text()
+
+            gr_server_timer = gr.Timer(5, active=True)
+            gr_server_timer.tick(
+                fn=_tick_server_jobs,
+                inputs=[gr_audiobook_list, gr_job_list],
+                outputs=[gr_progress, gr_audiobook_list, gr_job_list],
+            )
+            gr_job_resume_btn.click(
+                fn=_click_resume,
+                inputs=[gr_job_list],
+                outputs=[gr_progress],
+            )
+            gr_job_cancel_btn.click(
+                fn=_click_cancel,
+                inputs=[gr_job_list],
+                outputs=[gr_progress],
             )
 
             ########### Main chains
